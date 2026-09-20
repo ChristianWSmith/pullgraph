@@ -44,7 +44,7 @@ drop(_demand);
 
 **`Demand<T>`** — an RAII handle representing active demand for `T`. Dropping it releases demand. Cloning acquires an independent reference.
 
-**`Context`** — owns values produced during one execution step. Created from `Want` via `pg.context()`.
+**`Context`** — owns values produced during one execution step. Created from `PullGraph` via `pg.context()`.
 
 **`Provider<T>`** — trait for anything that produces a `T`. Implement `produce` (and optionally `activate`/`deactivate`).
 
@@ -176,7 +176,7 @@ let _demand = pg.want::<Diamond>().unwrap();
 
 | Type | Description |
 |------|-------------|
-| `Want` | Central registry. Create with `PullGraph::new()`. |
+| `PullGraph` | Central registry. Create with `PullGraph::new()`. |
 | `ProviderHandle<T>` | Typed key identifying a registered provider. |
 | `Demand<T>` | RAII demand handle. Clonable, independently reference-counted. |
 | `Context` | Owns produced values for one execution step. |
