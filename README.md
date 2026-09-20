@@ -1,1 +1,200 @@
-# want
+# pullgraph
+
+Demand-driven computation for Rust.
+
+`pullgraph` lets components declare that they require a particular piece of information. Producers of that information become active only while demand exists. When demand disappears, production stops. Dependencies propagate automatically — demanding a derived value activates everything required to produce it.
+
+```rust
+use pullgraph::{PullGraph, Context};
+
+struct Input(Vec<f64>);
+struct Stats { mean: f64 }
+struct Report(String);
+
+let want = PullGraph::new();
+
+let input = want.provide(|| Input(vec![1.0, 2.0, 3.0])).unwrap();
+let stats = want.derive([&input], |ctx: &mut Context| {
+    let input = ctx.get::<Input>().unwrap();
+    Stats { mean: input.0.iter().sum::<f64>() / input.0.len() as f64 }
+}).unwrap();
+let report = want.derive([&stats], |ctx: &mut Context| {
+    let stats = ctx.get::<Stats>().unwrap();
+    Report(format!("mean: {}", stats.mean))
+}).unwrap();
+
+// Demand triggers activation
+let _demand = want.want::<Report>().unwrap();
+
+// Host controls when production happens
+let mut ctx = want.context();
+ctx.produce::<Report>();
+let report = ctx.get::<Report>().unwrap();
+assert_eq!(report.0, "mean: 2");
+
+// When demand drops, providers deactivate
+drop(_demand);
+```
+
+## Core Concepts
+
+**`PullGraph`** — the central registry. Register providers, create demand, inspect state.
+
+**`ProviderHandle<T>`** — a typed handle identifying a registered provider for type `T`. Used to declare dependencies.
+
+**`Demand<T>`** — an RAII handle representing active demand for `T`. Dropping it releases demand. Cloning acquires an independent reference.
+
+**`Context`** — owns values produced during one execution step. Created from `Want` via `want.context()`.
+
+**`Provider<T>`** — trait for anything that produces a `T`. Implement `produce` (and optionally `activate`/`deactivate`).
+
+## Usage
+
+### Registering providers
+
+```rust
+use pullgraph::{PullGraph, Provider, Context};
+
+let want = PullGraph::new();
+
+// Simple provider — closure with no arguments
+let handle = want.provide(|| 42i32).unwrap();
+
+// Provider with dependencies — closure receives &mut Context
+let src = want.provide(|| vec![1, 2, 3]).unwrap();
+let sum = want.provide_with_deps([&src], |ctx: &mut Context| -> i32 {
+    ctx.get::<Vec<i32>>().unwrap().iter().sum()
+}).unwrap();
+
+// Derived provider — sugar for provide_with_deps + closure
+let doubled = want.derive([&sum], |ctx: &mut Context| -> i64 {
+    *ctx.get::<i32>().unwrap() as i64 * 2
+}).unwrap();
+```
+
+### Creating demand
+
+```rust
+let demand = want.want::<i32>().unwrap();  // returns error if no provider
+let demand2 = demand.clone();              // independent reference count
+
+assert!(want.is_demanded::<i32>());
+assert_eq!(want.demand_count::<i32>(), 2);
+
+drop(demand);
+assert_eq!(want.demand_count::<i32>(), 1);
+
+drop(demand2);
+assert!(!want.is_demanded::<i32>());
+```
+
+### Production
+
+```rust
+let src = want.provide(|| 10i32).unwrap();
+let derived = want.derive([&src], |ctx: &mut Context| -> i64 {
+    ctx.get::<i32>().map(|&v| v as i64 * 2).unwrap_or(0)
+}).unwrap();
+let _demand = want.want::<i64>().unwrap();
+
+// Create a context for one execution step
+let mut ctx = want.context();
+
+// produce() returns Option<&T> — None if undemanded
+let val = ctx.produce::<i64>();
+assert_eq!(val, Some(&20));
+
+// get() reads without producing
+let val = ctx.get::<i64>();
+assert_eq!(val, Some(&20));
+
+// produce() is idempotent within a context
+ctx.produce::<i64>();  // provider not called again
+```
+
+### Lifecycle hooks
+
+```rust
+use std::cell::Cell;
+use std::rc::Rc;
+
+let activated = Rc::new(Cell::new(false));
+let deactivated = Rc::new(Cell::new(false));
+
+struct MyProvider { a: Rc<Cell<bool>>, b: Rc<Cell<bool>> }
+
+impl Provider<i32> for MyProvider {
+    fn activate(&mut self) { self.a.set(true); }
+    fn produce(&mut self, _ctx: &mut Context) -> i32 { 42 }
+    fn deactivate(&mut self) { self.b.set(true); }
+}
+
+let want = PullGraph::new();
+let _h = want.provide(MyProvider { a: activated.clone(), b: deactivated.clone() }).unwrap();
+
+let d = want.want::<i32>().unwrap();
+assert!(activated.get());      // activate called on first demand
+
+let mut ctx = want.context();
+ctx.produce::<i32>();          // produce called when demanded
+
+drop(d);
+assert!(deactivated.get());    // deactivate called when demand reaches zero
+```
+
+### Diamond dependencies
+
+```rust
+let want = PullGraph::new();
+let a = want.provide(|| 1i32).unwrap();
+let b = want.derive([&a], |ctx: &mut Context| -> i64 {
+    ctx.get::<i32>().map(|&v| v as i64 + 10).unwrap_or(0)
+}).unwrap();
+let c = want.derive([&a], |ctx: &mut Context| -> i64 {
+    ctx.get::<i32>().map(|&v| v as i64 + 20).unwrap_or(0)
+}).unwrap();
+
+struct Diamond(i64, i64);
+let d = want.derive([&b, &c], |ctx: &mut Context| {
+    Diamond(*ctx.get::<i64>().unwrap(), *ctx.get::<i64>().unwrap())
+}).unwrap();
+
+let _demand = want.want::<Diamond>().unwrap();
+// Demanding D activates B, C, and A (with demand_count = 2)
+```
+
+## Design Principles
+
+- **No demand, no cost.** A provider with zero active demand performs no mandatory production.
+- **Host-controlled execution.** `want` determines *what* is demanded. Your code determines *when* production happens.
+- **RAII demand.** `Demand<T>` is an owned Rust value. Dropping it releases demand. No explicit start/stop.
+- **Shared production.** Multiple consumers of the same type share a single provider execution.
+- **Recursive activation.** Demanding a derived value automatically activates its entire dependency chain.
+- **Cycle detection.** Dependency cycles are caught at registration time, not at runtime.
+
+## API Reference
+
+| Type | Description |
+|------|-------------|
+| `Want` | Central registry. Create with `PullGraph::new()`. |
+| `ProviderHandle<T>` | Typed key identifying a registered provider. |
+| `Demand<T>` | RAII demand handle. Clonable, independently reference-counted. |
+| `Context` | Owns produced values for one execution step. |
+| `Provider<T>` | Trait: `activate()`, `produce(&mut Context) -> T`, `deactivate()`. |
+| `PullGraphError` | Error enum: `AlreadyRegistered`, `NoProvider`, `DependencyCycle`. |
+
+| Method | Description |
+|--------|-------------|
+| `Want::provide(p)` | Register a provider for `T`. Returns `ProviderHandle<T>`. |
+| `Want::provide_with_deps(deps, p)` | Register with dependencies. |
+| `Want::derive(deps, \|ctx\| ...)` | Shorthand for dependency + transform. |
+| `Want::want::<T>()` | Create demand. Returns `Demand<T>`. |
+| `Want::is_demanded::<T>()` | Check if any demand exists. |
+| `Want::demand_count::<T>()` | Get current demand count. |
+| `Want::context()` | Create a `Context` for production. |
+| `Context::produce::<T>()` | Produce `T` if demanded. Returns `Option<&T>`. |
+| `Context::get::<T>()` | Read a previously produced value. Returns `Option<&T>`. |
+
+## License
+
+MIT
