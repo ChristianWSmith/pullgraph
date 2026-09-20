@@ -185,13 +185,13 @@ let _demand = pg.want::<Diamond>().unwrap();
 
 | Method | Description |
 |--------|-------------|
-| `Want::provide(p)` | Register a provider for `T`. Returns `ProviderHandle<T>`. |
-| `Want::provide_with_deps(deps, p)` | Register with dependencies. |
-| `Want::derive(deps, \|ctx\| ...)` | Shorthand for dependency + transform. |
+| `PullGraph::provide(p)` | Register a provider for `T`. Returns `ProviderHandle<T>`. |
+| `PullGraph::provide_with_deps(deps, p)` | Register with dependencies. |
+| `PullGraph::derive(deps, \|ctx\| ...)` | Shorthand for dependency + transform. |
 | `PullGraph::want::<T>()` | Create demand. Returns `Demand<T>`. |
-| `Want::is_demanded::<T>()` | Check if any demand exists. |
-| `Want::demand_count::<T>()` | Get current demand count. |
-| `Want::context()` | Create a `Context` for production. |
+| `PullGraph::is_demanded::<T>()` | Check if any demand exists. |
+| `PullGraph::demand_count::<T>()` | Get current demand count. |
+| `PullGraph::context()` | Create a `Context` for production. |
 | `Context::produce::<T>()` | Produce `T` if demanded. Returns `Option<&T>`. |
 | `Context::get::<T>()` | Read a previously produced value. Returns `Option<&T>`. |
 
