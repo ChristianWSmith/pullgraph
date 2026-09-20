@@ -11,23 +11,23 @@ struct Input(Vec<f64>);
 struct Stats { mean: f64 }
 struct Report(String);
 
-let want = PullGraph::new();
+let pg = PullGraph::new();
 
-let input = want.provide(|| Input(vec![1.0, 2.0, 3.0])).unwrap();
-let stats = want.derive([&input], |ctx: &mut Context| {
+let input = pg.provide(|| Input(vec![1.0, 2.0, 3.0])).unwrap();
+let stats = pg.derive([&input], |ctx: &mut Context| {
     let input = ctx.get::<Input>().unwrap();
     Stats { mean: input.0.iter().sum::<f64>() / input.0.len() as f64 }
 }).unwrap();
-let report = want.derive([&stats], |ctx: &mut Context| {
+let report = pg.derive([&stats], |ctx: &mut Context| {
     let stats = ctx.get::<Stats>().unwrap();
     Report(format!("mean: {}", stats.mean))
 }).unwrap();
 
 // Demand triggers activation
-let _demand = want.want::<Report>().unwrap();
+let _demand = pg.want::<Report>().unwrap();
 
 // Host controls when production happens
-let mut ctx = want.context();
+let mut ctx = pg.context();
 ctx.produce::<Report>();
 let report = ctx.get::<Report>().unwrap();
 assert_eq!(report.0, "mean: 2");
@@ -44,7 +44,7 @@ drop(_demand);
 
 **`Demand<T>`** — an RAII handle representing active demand for `T`. Dropping it releases demand. Cloning acquires an independent reference.
 
-**`Context`** — owns values produced during one execution step. Created from `Want` via `want.context()`.
+**`Context`** — owns values produced during one execution step. Created from `Want` via `pg.context()`.
 
 **`Provider<T>`** — trait for anything that produces a `T`. Implement `produce` (and optionally `activate`/`deactivate`).
 
@@ -55,19 +55,19 @@ drop(_demand);
 ```rust
 use pullgraph::{PullGraph, Provider, Context};
 
-let want = PullGraph::new();
+let pg = PullGraph::new();
 
 // Simple provider — closure with no arguments
-let handle = want.provide(|| 42i32).unwrap();
+let handle = pg.provide(|| 42i32).unwrap();
 
 // Provider with dependencies — closure receives &mut Context
-let src = want.provide(|| vec![1, 2, 3]).unwrap();
-let sum = want.provide_with_deps([&src], |ctx: &mut Context| -> i32 {
+let src = pg.provide(|| vec![1, 2, 3]).unwrap();
+let sum = pg.provide_with_deps([&src], |ctx: &mut Context| -> i32 {
     ctx.get::<Vec<i32>>().unwrap().iter().sum()
 }).unwrap();
 
 // Derived provider — sugar for provide_with_deps + closure
-let doubled = want.derive([&sum], |ctx: &mut Context| -> i64 {
+let doubled = pg.derive([&sum], |ctx: &mut Context| -> i64 {
     *ctx.get::<i32>().unwrap() as i64 * 2
 }).unwrap();
 ```
@@ -75,30 +75,30 @@ let doubled = want.derive([&sum], |ctx: &mut Context| -> i64 {
 ### Creating demand
 
 ```rust
-let demand = want.want::<i32>().unwrap();  // returns error if no provider
+let demand = pg.want::<i32>().unwrap();  // returns error if no provider
 let demand2 = demand.clone();              // independent reference count
 
-assert!(want.is_demanded::<i32>());
-assert_eq!(want.demand_count::<i32>(), 2);
+assert!(pg.is_demanded::<i32>());
+assert_eq!(pg.demand_count::<i32>(), 2);
 
 drop(demand);
-assert_eq!(want.demand_count::<i32>(), 1);
+assert_eq!(pg.demand_count::<i32>(), 1);
 
 drop(demand2);
-assert!(!want.is_demanded::<i32>());
+assert!(!pg.is_demanded::<i32>());
 ```
 
 ### Production
 
 ```rust
-let src = want.provide(|| 10i32).unwrap();
-let derived = want.derive([&src], |ctx: &mut Context| -> i64 {
+let src = pg.provide(|| 10i32).unwrap();
+let derived = pg.derive([&src], |ctx: &mut Context| -> i64 {
     ctx.get::<i32>().map(|&v| v as i64 * 2).unwrap_or(0)
 }).unwrap();
-let _demand = want.want::<i64>().unwrap();
+let _demand = pg.want::<i64>().unwrap();
 
 // Create a context for one execution step
-let mut ctx = want.context();
+let mut ctx = pg.context();
 
 // produce() returns Option<&T> — None if undemanded
 let val = ctx.produce::<i64>();
@@ -129,13 +129,13 @@ impl Provider<i32> for MyProvider {
     fn deactivate(&mut self) { self.b.set(true); }
 }
 
-let want = PullGraph::new();
-let _h = want.provide(MyProvider { a: activated.clone(), b: deactivated.clone() }).unwrap();
+let pg = PullGraph::new();
+let _h = pg.provide(MyProvider { a: activated.clone(), b: deactivated.clone() }).unwrap();
 
-let d = want.want::<i32>().unwrap();
+let d = pg.want::<i32>().unwrap();
 assert!(activated.get());      // activate called on first demand
 
-let mut ctx = want.context();
+let mut ctx = pg.context();
 ctx.produce::<i32>();          // produce called when demanded
 
 drop(d);
@@ -145,28 +145,28 @@ assert!(deactivated.get());    // deactivate called when demand reaches zero
 ### Diamond dependencies
 
 ```rust
-let want = PullGraph::new();
-let a = want.provide(|| 1i32).unwrap();
-let b = want.derive([&a], |ctx: &mut Context| -> i64 {
+let pg = PullGraph::new();
+let a = pg.provide(|| 1i32).unwrap();
+let b = pg.derive([&a], |ctx: &mut Context| -> i64 {
     ctx.get::<i32>().map(|&v| v as i64 + 10).unwrap_or(0)
 }).unwrap();
-let c = want.derive([&a], |ctx: &mut Context| -> i64 {
+let c = pg.derive([&a], |ctx: &mut Context| -> i64 {
     ctx.get::<i32>().map(|&v| v as i64 + 20).unwrap_or(0)
 }).unwrap();
 
 struct Diamond(i64, i64);
-let d = want.derive([&b, &c], |ctx: &mut Context| {
+let d = pg.derive([&b, &c], |ctx: &mut Context| {
     Diamond(*ctx.get::<i64>().unwrap(), *ctx.get::<i64>().unwrap())
 }).unwrap();
 
-let _demand = want.want::<Diamond>().unwrap();
+let _demand = pg.want::<Diamond>().unwrap();
 // Demanding D activates B, C, and A (with demand_count = 2)
 ```
 
 ## Design Principles
 
 - **No demand, no cost.** A provider with zero active demand performs no mandatory production.
-- **Host-controlled execution.** `want` determines *what* is demanded. Your code determines *when* production happens.
+- **Host-controlled execution.** `PullGraph` determines *what* is demanded. Your code determines *when* production happens.
 - **RAII demand.** `Demand<T>` is an owned Rust value. Dropping it releases demand. No explicit start/stop.
 - **Shared production.** Multiple consumers of the same type share a single provider execution.
 - **Recursive activation.** Demanding a derived value automatically activates its entire dependency chain.
@@ -188,7 +188,7 @@ let _demand = want.want::<Diamond>().unwrap();
 | `Want::provide(p)` | Register a provider for `T`. Returns `ProviderHandle<T>`. |
 | `Want::provide_with_deps(deps, p)` | Register with dependencies. |
 | `Want::derive(deps, \|ctx\| ...)` | Shorthand for dependency + transform. |
-| `Want::want::<T>()` | Create demand. Returns `Demand<T>`. |
+| `PullGraph::want::<T>()` | Create demand. Returns `Demand<T>`. |
 | `Want::is_demanded::<T>()` | Check if any demand exists. |
 | `Want::demand_count::<T>()` | Get current demand count. |
 | `Want::context()` | Create a `Context` for production. |
